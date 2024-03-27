@@ -2,6 +2,7 @@ const nodemailer = require("nodemailer");
 const mongoose = require("mongoose");
 const User = require("../model/userModel");
 const userVerfication = require("../model/userVericatiaonModel");
+const PasswordReset = require("../model/passwordRestModel");
 const bcrypt = require("bcrypt");
 const { v4: uuidv4 } = require("uuid");
 const asyncHandler = require("express-async-handler");
@@ -127,11 +128,14 @@ const getUser = (req, res) => {
         const { expiresAt } = result[0];
         const hashUniqueString = result[0].uniqueString;
         bcrypt
-          .hash(uniqueString, hashUniqueString)
+          .compare(uniqueString, hashUniqueString)
           .then((result) => {
+            console.log(result);
             if (result) {
-              User.updateOne({ _id: userId, verified: true })
+              // res.sendFile(path.join(__dirname, "../views/verified.html"));
+              User.updateOne({ _id: userId }, { verified: true })
                 .then((result) => {
+                  console.log(result);
                   res.sendFile(path.join(__dirname, "../views/verified.html"));
                   // res.status(200).json({ message: "good" });
                 })
@@ -190,4 +194,180 @@ const verifiedUser = (req, res) => {
   res.sendFile(path.join(__dirname, "../views/verified.html"));
   // res.status(200).json({ message: "good" });
 };
-module.exports = { signupUser, loginUser, getUser, verifiedUser };
+//PASSWORD REST STUFF
+const passwordReset = (req, res) => {
+  const { email, redirectUrl } = req.body;
+  // data
+  User.find({ email })
+    .then((result) => {
+      // console.log(result);
+      if (result.length) {
+        if (!result[0].verified) {
+          res
+            .status(400)
+            .json({ status: "INVALID", message: "the user verified is false" });
+        } else {
+          //proceed with email to reset the password
+          sendResetEmail(result[0], redirectUrl, res);
+        }
+      } else {
+        res
+          .status(400)
+          .json({ status: "INVALID", message: "Cannot find the Email" });
+      }
+    })
+    .catch((err) => {
+      console.log(err);
+      res
+        .status(400)
+        .json({ status: "INVALID", message: "Email Hasn't not be verfified" });
+    });
+};
+//send password reset email
+const sendResetEmail = ({ _id, email }, redirectUrl, res) => {
+  const resetString = uuidv4() + _id;
+  PasswordReset.deleteMany({ userId: _id })
+
+    .then((result) => {
+      console.log(result);
+      const mailoption = {
+        from: process.env.AUTH_EMAIL,
+        to: email,
+        subject: "Rest password your email",
+        html: `   <p>this is your reset  email password </p>
+          <p> this link will <b>expires in 6hrs</b></p>
+          <p>press<a href=${
+            // URL + "/verified"
+            redirectUrl + "/" + _id + "/" + resetString
+          }>here</a>
+          to Proceed</p>`,
+      };
+      bcrypt
+        .hash(resetString, 10)
+        .then((hashedtSring) => {
+          const newPaswwordReset = new PasswordReset({
+            userId: _id,
+            resetString: hashedtSring,
+            createdAt: Date.now(),
+            expiresAt: Date.now() + 3600000,
+          });
+          newPaswwordReset
+            .save()
+            .then((result) => {
+              transporter
+                .sendMail(mailoption)
+                .then((result) => {
+                  res.status(200).json({
+                    status: "PENDING",
+                    message: "mAIL SENT",
+                  });
+                })
+                .catch((err) => {
+                  res.status(400).json({
+                    status: "INVALID",
+                    message: "Can't send the mail ",
+                  });
+                });
+            })
+            .catch((err) => {
+              res.status(400).json({
+                status: "INVALID",
+                message: "passwrd reset model can't be saved",
+              });
+            });
+        })
+        .catch((err) => {
+          res.status(400).json({
+            status: "INVALID",
+            message: "Cannot hash while reset the password",
+          });
+        });
+    })
+    .catch((err) => {
+      res
+        .status(400)
+        .json({ status: "INVALID", message: "Cannot find the Email" });
+    });
+};
+//ACTUALLY RESET THE PASSWORD
+const resetPassword = (req, res) => {
+  const { userId, resetString, newPassword } = req.body;
+  PasswordReset.find({ userId })
+    .then((result) => {
+      if (result.length > 0) {
+        const hashedtSring = result[0].resetString;
+        bcrypt
+          .compare(resetString, hashedtSring)
+          .then((result) => {
+            if (result) {
+              bcrypt
+                .hash(newPassword, 10)
+                .then((hashedNewPassword) => {
+                  User.updateOne(
+                    { _id: userId },
+                    { password: hashedNewPassword }
+                  )
+                    .then((result) => {
+                      PasswordReset.deleteOne({ userId })
+                        .then((result) => {
+                          res.status(200).json({
+                            status: "sucess",
+                            message: "password reset successfully",
+                          });
+                        })
+                        .catch((err) => {
+                          res.status(400).json({
+                            status: "INVALID",
+                            message: "password reset cant be deleted",
+                          });
+                        });
+                    })
+                    .catch((err) => {
+                      res.status(400).json({
+                        status: "INVALID",
+                        message: "can't update new password",
+                      });
+                    });
+                })
+                .catch((err) => {
+                  console.log(err);
+                  res.status(400).json({
+                    status: "INVALID",
+                    message: "the newpassword cannot be hashed",
+                  });
+                });
+            } else {
+              res.status(400).json({
+                status: "INVALID",
+                message: "result in bcrypt cant be hashed",
+              });
+            }
+          })
+          .catch((err) => {
+            res.status(400).json({
+              status: "INVALID",
+              message: "can't be hashed in google",
+            });
+          });
+      } else {
+        res.status(400).json({
+          status: "INVALID",
+          message: "there is no userId in the result",
+        });
+      }
+    })
+    .catch((err) => {
+      res.status(400).json({
+        status: "INVALID",
+        message: "UserId can't find",
+      });
+    });
+};
+module.exports = {
+  signupUser,
+  loginUser,
+  getUser,
+  verifiedUser,
+  passwordReset,
+  resetPassword,
+};
